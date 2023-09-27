@@ -1,0 +1,9 @@
+---
+- name: upgrade all pkg
+  hosts: localhost
+  become: true
+  tasks:
+    - name: apt upgrade all
+      apt: 
+        name: '*'
+        state: latest
