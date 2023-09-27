@@ -1,24 +1,23 @@
 ---
-- name: Apache
+- name: MySQL
   hosts: localhost
   become: true
   tasks:
-    - name: apt install apache
+    - name: apt install mysql-server
       apt: 
-        name: 'apache2'
+        name: 'mysql-server'
         state: latest
         
-    - name: Register apache as service
+    - name: Register MySQL as service
       service: 
-        name: 'apache2'
+        name: 'mysql.service'
         enabled: true
         state: started
         
     - name: Check apache status
-      shell: 'systemctl status apache2.service'
+      shell: 'systemctl status mysql.service'
       register: result
     
     - name: Result
       debug: 
         msg: "apache status: {{ result }}"
-
