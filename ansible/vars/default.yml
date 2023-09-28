@@ -1,0 +1,7 @@
+---
+mysql_root_password: "mysql_root_password"
+app_user: "denis"
+http_host: "simple_lamp"
+http_conf: "simple_lamp.conf"
+http_port: "80"
+disable_default: true
