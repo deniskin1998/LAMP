@@ -1,78 +1,134 @@
 ---
-- name: upgrade all pkg
-  hosts: localhost
+- hosts: all
+  #connection: local
   become: true
-  vars:
+  vars_files:
     - vars/default.yml
-  tasks:
-    - name: apt upgrade all
-      apt: 
-        name: '*'
-        state: latest
 
+  tasks:
     - name: Install prerequisites
       apt: name={{ item }} update_cache=yes state=latest force_apt_get=yes
       loop: [ 'aptitude' ]
 
-  # Install LAMP 
-    - name: Install LAMP
+    - name: Install unzip
+      package:
+        name: unzip
+        state: present
+
+  #Apache Configuration
+    - name: Install LAMP Packages
       apt: name={{ item }} update_cache=yes state=latest
-      loop: [ 'apache2', 'mysql-server', 'python3-pymysql', 'php', 'php-mysql', 'libapache2-mod-php' ]
+      loop: [ 'apache2', 'apache2-utils', 'python3-pymysql', 'php', php-curl, 'php-mysql', 'php-dev', 'python3-pip', 'libapache2-mod-php' ]
+
 
     - name: Create document root
       file:
-        path: "/var/www/{{ http_host }}"
+        path: "/var/www/html/{{ http_host }}"
         state: directory
         owner: "{{ app_user }}"
         mode: '0755'
 
-  # MySQL
-    - name: start and enable mysql service
-      service:
-        name: mysql
-        state: started
-        enabled: yes
-
-    - name: Sets the root password
-      become: true
-      no_log: true
-      mysql_user:
-        login_user: root
-        login_password: "{{ mysql_root_password }}"
-        name: root
-        password: "{{ mysql_root_password }}"
-        check_implicit_admin: true
-        login_unix_socket: /var/run/mysqld/mysqld.sock
-
-  # Install memcached 
-    - include_tasks: memcached.yml
-
-  # Install simpl-lamp-app
-    - iclude_tasks: app.yml
-
-  # Configuration UFW 
+  # UFW Configuration
     - name: "UFW - Allow HTTP on port {{ http_port }}"
       ufw:
         rule: allow
         port: "{{ http_port }}"
         proto: tcp
 
+  # MySQL Configuration
+    - name: Install MySQL Server
+      ansible.builtin.package:
+        name: mysql-server
+        state: latest
 
-  #Apache
+    - name: Install MySQL Client
+      ansible.builtin.package:
+        name: mysql-client
+        state: latest
+
+
+    - name: Start MySQL
+      service:
+        name: mysql
+        state: started
+
+    - name: Install community.mysql dependencies
+      package:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - python3
+        - python3-pymysql
+
+    - name: Create Application Database
+      community.mysql.mysql_db:
+        name: "{{ mysql_db_name }}"
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+        state: present
+
+    - name: Create Application DB User
+      community.mysql.mysql_user:
+        name: "{{ mysql_user }}"
+        password: "{{ mysql_root_password }}"
+        priv: "{{ mysql_db_name }}.*:ALL"
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+        state: present
+
+    # PHP
+    - name: Sets Up PHP Info Page
+      template:
+        src: "files/info.php.j2"
+        dest: "/var/www/html/{{ http_host }}/info.php"
+
+    # Installing memcached
+    - name: Install memcached
+      apt: name={{ item }} update_cache=yes state=latest force_apt_get=yes
+      loop: [ 'libmemcached-tools', 'memcached', 'php-memcached', 'php-cli'  ]
+      
+    - name: start and enable memcached service
+      service:
+        name: memcached
+        state: started
+        enabled: yes
+
+   # Download app
+    - name: Download app package
+      ansible.builtin.get_url:
+        url: https://github.com/qyjohn/simple-lamp/archive/refs/heads/master.zip
+        dest: /tmp/simple-lamp.zip
+
+    - name: Extract app package
+      ansible.builtin.unarchive:
+        src: /tmp/simple-lamp.zip
+        dest: /tmp
+
+    - name: Copy app package to www
+      ansible.builtin.copy:
+        src: /tmp/simple-lamp-master/
+        dest: "/var/www/html/{{ http_host }}"
+        owner: www-data
+        group: www-data
+
+    - name: Restore SQL database
+      community.mysql.mysql_db:
+        name: "{{ mysql_db_name }}"
+        login_user: "{{ mysql_user }}"
+        login_password: "{{ mysql_root_password }}"
+        target: "/var/www/html/{{ http_host }}/simple_lamp.sql"
+        state: import
+
+    - name: Copy configuration PHP 
+      template:
+        src: "files/config.php.j2"
+        dest: "/var/www/html/{{ http_host }}/config.php"
+      notify: Reload Apache
+
+    #Apache Configuration
 
     - name: Set up Apache virtualhost
       template:
-        src: "templates/apache.conf.j2"
+        src: "files/apache.conf.j2"
         dest: "/etc/apache2/sites-available/{{ http_conf }}"
-      notify: Reload Apache
-
-    - name: Set up config.php
-      ansible.builtin.template:
-        src: "templates/config.php.j2"
-        dest: "/var/www/{{ http_host }}/conf.php"
-
-    - name: Enable new site
-      shell: /usr/sbin/a2ensite {{ http_conf }}
       notify: Reload Apache
 
     - name: Disable default Apache site
@@ -80,16 +136,34 @@
       when: disable_default
       notify: Reload Apache
 
-    - name: Change directory owner
-      become: true
+    - name: Change directory ownership
       ansible.builtin.file:
-        state: directory
-        path: /var/www/{{ http_host }}/uploads
+        path: /var/www/html/{{ http_host }}/uploads
         owner: www-data
         group: www-data
 
-  # PHP Index Page
-    - name: Sets Up PHP Info Page
-      template:
-        src: "templates/index.php.j2"
-        dest: "/var/www/{{ http_host }}/index.php"
+    - name: Set up config.php
+      ansible.builtin.template:
+        src: "files/config.php.j2"
+        dest: "/var/www/html/{{ http_host }}/config.php"
+
+    - name: Setup Apache site
+      ansible.builtin.template:
+        src: files/apache.conf.j2
+        dest: "/etc/apache2/sites-available/{{ http_host }}.conf"
+
+    - name: Enable Apache site
+      ansible.builtin.command: "a2ensite {{ http_conf }}"
+      notify: Reload Apache
+      
+
+  handlers:
+    - name: Reload Apache
+      service:
+        name: apache2
+        state: reloaded
+
+    - name: Restart Apache
+      service:
+        name: apache2
+        state: restarted
